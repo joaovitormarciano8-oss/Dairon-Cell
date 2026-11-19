@@ -1,0 +1,14 @@
+{
+  "name": "Dairon Cell",
+  "short_name": "Dairon Cell",
+  "description": "Sua loja de tecnologias Apple de confiança.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#101114",
+  "theme_color": "#101114",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "assets/img/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
