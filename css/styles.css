@@ -656,3 +656,6 @@ body.menu-open .header { background: transparent; -webkit-backdrop-filter: none;
   .story--card { scroll-snap-align: center; }
   .reels .btn { width: 100%; }
 }
+
+.contact-card__go--2 { margin-top: 0; padding-top: 6px; }
+.contact-card__note { margin-top: 10px; font-size: .9rem; line-height: 1.45; color: var(--gray-2); }
