@@ -200,6 +200,12 @@ var CFG = {
 var DUR = 20, W = 1920, H = 1080;
 var SAMPLES = Math.max(1, Math.min(32, parseInt(qs.get("mb"), 10) || 16));
 var FIXED_SAMPLES = qs.has("mb");
+// Qualidade adaptativa: começa conforme o aparelho e desce de nível se o quadro não acompanhar.
+var MOBILE = matchMedia("(pointer: coarse)").matches || Math.min(screen.width, screen.height) < 820;
+var LEVELS = [ { r: 1.00, mb: 16 }, { r: 1.00, mb: 8 }, { r: 0.80, mb: 6 }, { r: 0.66, mb: 4 }, { r: 0.55, mb: 3 }, { r: 0.50, mb: 2 }, { r: 0.45, mb: 1 } ];
+var level = FIXED_SAMPLES ? 0 : (MOBILE ? 3 : 0);
+if (!FIXED_SAMPLES) SAMPLES = LEVELS[level].mb;
+var RW = W, RH = H;
 var SHUTTER = 1 / 30;              // intervalo coberto pelos sub-quadros de cada frame
 
 document.querySelectorAll("[data-cfg]").forEach(function(el){ el.textContent = CFG[el.dataset.cfg]; });
@@ -220,9 +226,9 @@ var R = rng(20261127);
 var canvas = document.getElementById("gl");
 var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: false, preserveDrawingBuffer: true, powerPreference: "high-performance" });
 renderer.setPixelRatio(1);
-renderer.setSize(W, H, false);
+renderer.setSize(W, H, false);  // ajustado em applyLevel()
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = MOBILE ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 renderer.shadowMap.autoUpdate = false;   // a cidade é estática: sombra calculada uma vez
 renderer.shadowMap.needsUpdate = true;
 
@@ -238,7 +244,7 @@ var sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(260, 420, 180);
 sun.target.position.set(0,0,0);
 sun.castShadow = true;
-sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.mapSize.set(MOBILE ? 2048 : 4096, MOBILE ? 2048 : 4096);
 var sc = sun.shadow.camera; sc.left=-430; sc.right=430; sc.top=430; sc.bottom=-430; sc.near=50; sc.far=1400;
 sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.4;
 scene.add(sun); scene.add(sun.target);
@@ -451,9 +457,20 @@ function setTime(t){
 }
 
 /* ================= MOTION BLUR: média de N sub-quadros ================= */
-var rtOpts = { type: THREE.HalfFloatType, depthBuffer: true, samples: 4 };
+var rtOpts = { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 };  // o jitter dos sub-quadros já faz o antisserrilhado
 var rtSub = new THREE.WebGLRenderTarget(W, H, rtOpts);
 var rtAcc = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: false });
+function applyLevel(){
+  var L = LEVELS[level];
+  if (!FIXED_SAMPLES) SAMPLES = L.mb;
+  var shown = Math.min(innerWidth / W, innerHeight / H) * (window.devicePixelRatio || 1);  // tamanho real na tela
+  var r = Math.min(L.r, Math.max(0.3, shown));
+  RW = Math.round(W * r); RH = Math.round(H * r);
+  renderer.setSize(RW, RH, false);
+  rtSub.setSize(RW, RH); rtAcc.setSize(RW, RH);
+}
+// deslocamento sub-pixel por sub-quadro (antisserrilhado de graça)
+var JIT = [[.5,.5],[.25,.75],[.75,.25],[.125,.375],[.625,.875],[.375,.125],[.875,.625],[.0625,.5625],[.5625,.0625],[.3125,.8125],[.8125,.3125],[.1875,.1875],[.6875,.6875],[.4375,.9375],[.9375,.4375],[.03,.97]];
 var quadCam = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
 var quadGeo = new THREE.PlaneGeometry(2,2);
 var accMat = new THREE.ShaderMaterial({
@@ -483,12 +500,14 @@ function renderFrame(t){
   for (var s = 0; s < n; s++){
     var ts = n === 1 ? t : t - SHUTTER * (1 - (s + .5) / n);
     setTime(Math.max(0, ts));
+    var j = JIT[s % JIT.length]; if (n > 1) camera.setViewOffset(RW, RH, j[0] - .5, j[1] - .5, RW, RH); else camera.clearViewOffset();
     renderer.setRenderTarget(rtSub); renderer.setClearColor(FOG, 1); renderer.clear(true, true, false);
     renderer.render(scene, camera);
     if (s === 0 && renderer.shadowMap.needsUpdate === false) {} // sombra já pronta
     accMat.uniforms.tex.value = rtSub.texture; accMat.uniforms.w.value = 1 / n;
     renderer.setRenderTarget(rtAcc); renderer.render(accScene, quadCam);
   }
+  camera.clearViewOffset();
   renderer.setRenderTarget(null); renderer.render(outScene, quadCam);
   setTime(t);
   overlays(t);
@@ -505,6 +524,7 @@ function project(p){ _v.copy(p).project(camera); return { x: (_v.x*.5+.5)*W, y: 
 function label(node, pos, o){
   var s = project(pos);
   if (!s.ok) o = 0;
+  o *= clamp((s.y - 230) / 70, 0, 1);   // some antes de encostar no banner do topo
   show(node, o, "translate(" + (s.x - node.offsetWidth/2).toFixed(1) + "px," + (s.y - node.offsetHeight - 14).toFixed(1) + "px) scale(" + lerp(.85,1,o).toFixed(3) + ")");
 }
 var L1 = new THREE.Vector3(-1.6*P, 1, ROAD1_Z), L2 = new THREE.Vector3(ROAD2_X, 1, -1.1*P);
@@ -642,13 +662,14 @@ function scoreAt(t0){
 }
 
 /* ================= REPRODUÇÃO ================= */
-var playing = false, t0Audio = 0, t0Perf = 0, slow = 0;
+var playing = false, t0Audio = 0, t0Perf = 0, lastFrame = 0, avgDt = 0, frames = 0;
 function now(){ return (performance.now() - t0Perf) / 1000; }
 function start(){
   $("start").hidden = true; $("again").hidden = true;
   if (!actx) audioInit();
   if (actx){ actx.resume(); t0Audio = actx.currentTime + 0.15; scoreAt(t0Audio); }
   t0Perf = performance.now() + 150;
+  lastFrame = 0; avgDt = 0; frames = 0;
   playing = true; requestAnimationFrame(loop);
 }
 function loop(){
@@ -656,9 +677,11 @@ function loop(){
   var t = now();
   if (t >= DUR){ renderFrame(DUR - 1e-3); playing = false; $("again").hidden = false; return; }
   var a = performance.now();
+  if (lastFrame){ var dt = a - lastFrame; avgDt = avgDt ? avgDt*.85 + dt*.15 : dt; }
+  lastFrame = a; frames++;
+  if (!FIXED_SAMPLES && frames > 8 && avgDt > 42 && level < LEVELS.length - 1){ level++; applyLevel(); frames = 0; avgDt = 0; }
   renderFrame(Math.max(0, t));
-  var ms = performance.now() - a;
-  if (!FIXED_SAMPLES && SAMPLES > 4){ slow = ms > 66 ? slow + 1 : Math.max(0, slow - 1); if (slow > 20){ SAMPLES = SAMPLES/2|0; slow = 0; } }
+
   requestAnimationFrame(loop);
 }
 $("playBtn").addEventListener("click", start);
@@ -669,11 +692,11 @@ function fit(){
   var s = Math.min(innerWidth / W, innerHeight / H);
   $("stage").style.transform = "scale(" + s + ") translate(-50%,-50%)";
 }
-addEventListener("resize", fit); fit();
+addEventListener("resize", function(){ fit(); if (typeof applyLevel === "function") applyLevel(); }); fit();
 
 window.renderAt = function(t){ renderFrame(t); };
 function boot(){
-  applyFacade();
+  applyFacade(); applyLevel();
   var tq = parseFloat(qs.get("t"));
   renderFrame(isFinite(tq) ? clamp(tq, 0, DUR) : 0.0);
   if (isFinite(tq)) $("start").hidden = true;
